@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Isometric Grid Canvas</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #0f172a; user-select: none; }
+        canvas { display: block; touch-action: none; }
+        /* Custom scrollbar for palette if needed */
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
+</head>
+<body class="font-sans text-slate-200">
+
+    <!-- Canvas Element -->
+    <canvas id="isoCanvas"></canvas>
+
+    <!-- UI Overlay: Top Left Info -->
+    <div class="absolute top-4 left-4 pointer-events-none opacity-50 text-xs z-10">
+        <p class="font-bold">Iso Canvas JS</p>
+        <p>Left Click: Place | Right Click: Delete</p>
+        <p>Space+Drag / Middle Click: Pan | Scroll: Zoom</p>
+    </div>
+
+    <!-- Stats Counter -->
+    <div class="absolute top-4 right-4 bg-slate-800/50 p-2 rounded-lg text-xs font-mono text-slate-400 pointer-events-none z-10">
+        Blocks: <span id="blockCount">0</span>
+    </div>
+
+    <!-- UI Overlay: Bottom Toolbar -->
+    <div class="absolute bottom-6 left-1/2 transform -translate-x-1/2 bg-slate-800/90 backdrop-blur-md p-3 rounded-2xl shadow-2xl border border-slate-700 flex items-center gap-4 z-20 transition-all">
+        
+        <!-- Tools -->
+        <div class="flex gap-2 border-r border-slate-700 pr-4">
+            <button id="btnToolDraw" class="p-2 rounded-lg transition-all bg-blue-600 text-white shadow-lg" title="Draw Mode">
+                <!-- Icon: MousePointer2 -->
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
+            </button>
+            <button id="btnToolPan" class="p-2 rounded-lg transition-all hover:bg-slate-700 text-slate-400" title="Pan Mode">
+                <!-- Icon: Move -->
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><polyline points="19 9 22 12 19 15"/><polyline points="15 19 12 22 9 19"/><line x1="12" y1="2" x2="12" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/></svg>
+            </button>
+        </div>
+
+        <!-- Color Picker -->
+        <div class="flex gap-2 overflow-x-auto max-w-[200px] hide-scrollbar" id="colorPalette">
+            <!-- Generated via JS -->
+        </div>
+
+        <!-- Actions -->
+        <div class="flex gap-2 border-l border-slate-700 pl-4">
+            <button id="btnGrid" class="p-2 rounded-lg text-blue-400 bg-blue-400/10" title="Toggle Grid">
+                <!-- Icon: Grid -->
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/><path d="M9 3v18"/><path d="M15 3v18"/></svg>
+            </button>
+            <button id="btnClear" class="p-2 rounded-lg text-red-400 hover:bg-red-400/10 transition-colors" title="Clear All">
+                <!-- Icon: Trash -->
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+            </button>
+            <button id="btnExport" class="p-2 rounded-lg text-emerald-400 hover:bg-emerald-400/10 transition-colors" title="Export PNG">
+                <!-- Icon: Download -->
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
+            </button>
+        </div>
+    </div>
+
+    <script>
+        // --- CONFIGURATION ---
+        const TILE_WIDTH = 64;
+        const TILE_HEIGHT = 32;
+        const PALETTE = [
+            '#EF4444', '#F97316', '#F59E0B', '#10B981', '#3B82F6', 
+            '#6366F1', '#8B5CF6', '#EC4899', '#64748B', '#FFFFFF'
+        ];
+
+        // --- STATE ---
+        let canvas, ctx;
+        let tiles = {}; // format: "x,y": color
+        let pan = { x: window.innerWidth / 2, y: window.innerHeight / 4 };
+        let zoom = 1;
+        let selectedColor = PALETTE[4]; // Default Blue
+        let hoveredTile = null;
+        let isDragging = false;
+        let dragStart = { x: 0, y: 0 };
+        let showGrid = true;
+        let currentTool = 'draw'; // 'draw' | 'pan'
+        
+        // --- DOM ELEMENTS ---
+        const blockCountEl = document.getElementById('blockCount');
+        const colorPaletteEl = document.getElementById('colorPalette');
+
+        // --- UTILS ---
+        
+        // Adjust color brightness
+        function adjustColor(color, percent) {
+            let R = parseInt(color.substring(1, 3), 16);
+            let G = parseInt(color.substring(3, 5), 16);
+            let B = parseInt(color.substring(5, 7), 16);
+
+            R = parseInt((R * (100 + percent)) / 100);
+            G = parseInt((G * (100 + percent)) / 100);
+            B = parseInt((B * (100 + percent)) / 100);
+
+            R = (R < 255) ? R : 255;  
+            G = (G < 255) ? G : 255;  
+            B = (B < 255) ? B : 255;  
+
+            const RR = ((R.toString(16).length === 1) ? "0" + R.toString(16) : R.toString(16));
+            const GG = ((G.toString(16).length === 1) ? "0" + G.toString(16) : G.toString(16));
+            const BB = ((B.toString(16).length === 1) ? "0" + B.toString(16) : B.toString(16));
+
+            return "#" + RR + GG + BB;
+        }
+
+        function gridToScreen(row, col) {
+            const x = (col - row) * (TILE_WIDTH / 2);
+            const y = (col + row) * (TILE_HEIGHT / 2);
+            return { x, y };
+        }
+
+        function screenToGrid(screenX, screenY) {
+            const worldX = (screenX - pan.x) / zoom;
+            const worldY = (screenY - pan.y) / zoom;
+            
+            const halfW = TILE_WIDTH / 2;
+            const halfH = TILE_HEIGHT / 2;
+
+            const col = Math.floor((worldX / halfW + worldY / halfH) / 2);
+            const row = Math.floor((worldY / halfH - worldX / halfW) / 2);
+
+            return { row, col };
+        }
+
+        // --- DRAWING ---
+
+        function drawBlock(x, y, color) {
+            const topColor = color;
+            const rightColor = adjustColor(color, -20); 
+            const leftColor = adjustColor(color, -10);  
+
+            const halfW = TILE_WIDTH / 2;
+            const halfH = TILE_HEIGHT / 2;
+            const h = TILE_HEIGHT; // Height of block extrusion
+
+            ctx.lineWidth = 1;
+            ctx.lineJoin = 'round';
+
+            // 1. Top Face
+            ctx.beginPath();
+            ctx.moveTo(x, y - h);
+            ctx.lineTo(x + halfW, y - halfH - h);
+            ctx.lineTo(x, y - TILE_HEIGHT - h);
+            ctx.lineTo(x - halfW, y - halfH - h);
+            ctx.closePath();
+            ctx.fillStyle = topColor;
+            ctx.fill();
+            ctx.strokeStyle = adjustColor(topColor, -30);
+            ctx.stroke();
+
+            // 2. Right Face
+            ctx.beginPath();
+            ctx.moveTo(x, y - h);
+            ctx.lineTo(x + halfW, y - halfH - h);
+            ctx.lineTo(x + halfW, y - halfH);
+            ctx.lineTo(x, y);
+            ctx.closePath();
+            ctx.fillStyle = rightColor;
+            ctx.fill();
+            ctx.strokeStyle = adjustColor(rightColor, -30);
+            ctx.stroke();
+
+            // 3. Left Face
+            ctx.beginPath();
+            ctx.moveTo(x, y - h);
+            ctx.lineTo(x - halfW, y - halfH - h);
+            ctx.lineTo(x - halfW, y - halfH);
+            ctx.lineTo(x, y);
+            ctx.closePath();
+            ctx.fillStyle = leftColor;
+            ctx.fill();
+            ctx.strokeStyle = adjustColor(leftColor, -30);
+            ctx.stroke();
+        }
+
+        function drawGridTile(x, y, isHovered) {
+            const halfW = TILE_WIDTH / 2;
+            const halfH = TILE_HEIGHT / 2;
+
+            ctx.beginPath();
+            ctx.moveTo(x, y);
+            ctx.lineTo(x + halfW, y + halfH);
+            ctx.lineTo(x, y + TILE_HEIGHT);
+            ctx.lineTo(x - halfW, y + halfH);
+            ctx.closePath();
+
+            if (isHovered) {
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+                ctx.fill();
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 2;
+            } else {
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+                ctx.lineWidth = 1;
+            }
+            ctx.stroke();
+        }
+
+        function render() {
+            // Clear Canvas
+            ctx.fillStyle = '#0f172a'; // Slate-900
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            ctx.save();
+            ctx.translate(pan.x, pan.y);
+            ctx.scale(zoom, zoom);
+
+            // Draw Infinite Grid (View Culling)
+            if (showGrid) {
+                const range = 20; // Simply draw a large area around center for demo
+                // In a real app, calculate visible bounds
+                for (let r = -range; r <= range; r++) {
+                    for (let c = -range; c <= range; c++) {
+                        // Optimization: Don't draw grid under blocks
+                        if (!tiles[`${r},${c}`]) {
+                            const pos = gridToScreen(r, c);
+                            drawGridTile(pos.x, pos.y, false);
+                        }
+                    }
+                }
+            }
+
+            // Draw Blocks (Painter's Algorithm sort)
+            const keys = Object.keys(tiles);
+            keys.sort((a, b) => {
+                const [r1, c1] = a.split(',').map(Number);
+                const [r2, c2] = b.split(',').map(Number);
+                return (r1 + c1) - (r2 + c2);
+            });
+
+            keys.forEach(key => {
+                const [r, c] = key.split(',').map(Number);
+                const pos = gridToScreen(r, c);
+                // Offset y by TILE_HEIGHT so the base of the block sits on the grid
+                drawBlock(pos.x, pos.y + TILE_HEIGHT, tiles[key]);
+            });
+
+            // Draw Hover Highlight
+            if (hoveredTile) {
+                const key = `${hoveredTile.row},${hoveredTile.col}`;
+                const pos = gridToScreen(hoveredTile.row, hoveredTile.col);
+                
+                if (tiles[key]) {
+                    // Highlight existing block
+                    // (Simple implementation: just redraw a semi-transparent white overlay)
+                } else {
+                    // Highlight grid floor
+                    drawGridTile(pos.x, pos.y, true);
+                }
+            }
+
+            ctx.restore();
+            requestAnimationFrame(render);
+        }
+
+        // --- INITIALIZATION ---
+
+        function init() {
+            canvas = document.getElementById('isoCanvas');
+            ctx = canvas.getContext('2d');
+
+            // Handle resizing
+            const resize = () => {
+                canvas.width = window.innerWidth;
+                canvas.height = window.innerHeight;
+            };
+            window.addEventListener('resize', resize);
+            resize();
+
+            // Initialize Palette UI
+            PALETTE.forEach(color => {
+                const btn = document.createElement('button');
+                btn.className = `w-8 h-8 rounded-full border-2 shrink-0 transition-transform hover:scale-110`;
+                btn.style.backgroundColor = color;
+                btn.style.borderColor = color === selectedColor ? '#fff' : 'transparent';
+                if(color === selectedColor) btn.style.boxShadow = '0 0 10px rgba(255,255,255,0.5)';
+                
+                btn.onclick = () => {
+                    selectedColor = color;
+                    setTool('draw');
+                    updatePaletteUI();
+                };
+                colorPaletteEl.appendChild(btn);
+            });
+
+            // Start Loop
+            requestAnimationFrame(render);
+        }
+
+        function updatePaletteUI() {
+            const buttons = colorPaletteEl.children;
+            Array.from(buttons).forEach(btn => {
+                // extract hex from style or dataset (simplified here by re-checking bg)
+                // To keep it robust, we'll just match by rgb value or rebuild logic.
+                // Simpler approach: re-render or toggle classes.
+                const bg = btn.style.backgroundColor; 
+                // Convert hex to rgb to compare (browsers normalize style.backgroundColor to rgb)
+                // This is a bit messy in vanilla JS without stored references. 
+                // Let's just rebuild the class logic based on index if needed or just keep it simple.
+                // We will clear styles and re-apply based on current selection.
+                
+                // Re-assert border logic
+                // Note: rgb(r, g, b) comparison is tricky. 
+                // We'll trust the user clicks the buttons we generated.
+                if (rgbToHex(btn.style.backgroundColor).toUpperCase() === selectedColor.toUpperCase()) {
+                     btn.style.borderColor = '#fff';
+                     btn.style.transform = 'scale(1.1)';
+                     btn.style.boxShadow = '0 0 10px rgba(255,255,255,0.5)';
+                } else {
+                     btn.style.borderColor = 'transparent';
+                     btn.style.transform = 'scale(1)';
+                     btn.style.boxShadow = 'none';
+                }
+            });
+        }
+        
+        // Helper for color comparison
+        function rgbToHex(rgb) {
+            if(rgb.startsWith('#')) return rgb;
+            let sep = rgb.indexOf(",") > -1 ? "," : " ";
+            rgb = rgb.substr(4).split(")")[0].split(sep);
+            let r = (+rgb[0]).toString(16),
+                g = (+rgb[1]).toString(16),
+                b = (+rgb[2]).toString(16);
+            if (r.length == 1) r = "0" + r;
+            if (g.length == 1) g = "0" + g;
+            if (b.length == 1) b = "0" + b;
+            return "#" + r + g + b;
+        }
+
+        // --- INPUT HANDLING ---
+
+        function setTool(tool) {
+            currentTool = tool;
+            canvas.className = tool === 'pan' ? 'cursor-move' : 'cursor-crosshair';
+            
+            // Update UI buttons
+            const btnDraw = document.getElementById('btnToolDraw');
+            const btnPan = document.getElementById('btnToolPan');
+            
+            if(tool === 'draw') {
+                btnDraw.className = "p-2 rounded-lg transition-all bg-blue-600 text-white shadow-lg";
+                btnPan.className = "p-2 rounded-lg transition-all hover:bg-slate-700 text-slate-400";
+            } else {
+                btnDraw.className = "p-2 rounded-lg transition-all hover:bg-slate-700 text-slate-400";
+                btnPan.className = "p-2 rounded-lg transition-all bg-blue-600 text-white shadow-lg";
+            }
+        }
+
+        document.getElementById('btnToolDraw').onclick = () => setTool('draw');
+        document.getElementById('btnToolPan').onclick = () => setTool('pan');
+        
+        document.getElementById('btnGrid').onclick = function() {
+            showGrid = !showGrid;
+            this.className = showGrid 
+                ? "p-2 rounded-lg text-blue-400 bg-blue-400/10" 
+                : "p-2 rounded-lg text-slate-400 hover:bg-slate-700";
+        };
+
+        document.getElementById('btnClear').onclick = () => {
+            if(confirm('Clear all blocks?')) {
+                tiles = {};
+                blockCountEl.innerText = 0;
+            }
+        };
+
+        document.getElementById('btnExport').onclick = () => {
+            const link = document.createElement('a');
+            link.download = 'isometric_creation.png';
+            link.href = canvas.toDataURL();
+            link.click();
+        };
+
+        window.addEventListener('mousedown', e => {
+            // Ignore clicks on UI
+            if(e.target.tagName !== 'CANVAS') return;
+
+            if (e.button === 1 || currentTool === 'pan' || e.shiftKey) {
+                isDragging = true;
+                dragStart = { x: e.clientX - pan.x, y: e.clientY - pan.y };
+                return;
+            }
+
+            if (e.button === 0 && hoveredTile) {
+                const key = `${hoveredTile.row},${hoveredTile.col}`;
+                tiles[key] = selectedColor;
+                blockCountEl.innerText = Object.keys(tiles).length;
+            }
+        });
+
+        window.addEventListener('mousemove', e => {
+            if (isDragging) {
+                pan.x = e.clientX - dragStart.x;
+                pan.y = e.clientY - dragStart.y;
+                return;
+            }
+
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            
+            const gridPos = screenToGrid(x, y);
+            
+            if (!hoveredTile || gridPos.row !== hoveredTile.row || gridPos.col !== hoveredTile.col) {
+                hoveredTile = gridPos;
+            }
+
+            // Drag Painting
+            if (e.buttons === 1 && currentTool === 'draw' && !e.shiftKey && e.target.tagName === 'CANVAS') {
+                const key = `${hoveredTile.row},${hoveredTile.col}`;
+                if (tiles[key] !== selectedColor) {
+                    tiles[key] = selectedColor;
+                    blockCountEl.innerText = Object.keys(tiles).length;
+                }
+            }
+        });
+
+        window.addEventListener('mouseup', () => {
+            isDragging = false;
+        });
+
+        window.addEventListener('wheel', e => {
+            const scaleAmount = -e.deltaY * 0.001;
+            const newZoom = Math.min(Math.max(0.5, zoom + scaleAmount), 3);
+            zoom = newZoom;
+        }, { passive: true });
+
+        window.addEventListener('contextmenu', e => {
+            e.preventDefault();
+            if (hoveredTile) {
+                const key = `${hoveredTile.row},${hoveredTile.col}`;
+                if (tiles[key]) {
+                    delete tiles[key];
+                    blockCountEl.innerText = Object.keys(tiles).length;
+                }
+            }
+        });
+
+        // Run
+        init();
+
+    </script>
+</body>
+</html>
